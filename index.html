@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Biglietteria Giglio Online v2</title>
+  <title>Biglietteria Giglio Online v3</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root{
@@ -21,10 +21,17 @@
     .btn{padding:8px 12px;border:1px solid #ccc;border-radius:8px;background:#fff;cursor:pointer}
     .btn.dark{background:var(--brand);color:#fff;border:none}
     .btn.active{outline:2px solid var(--accent)}
+    .btn.green{background:#16a34a;color:#fff;border:none}
+    .btn.blue{background:#2563eb;color:#fff;border:none}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
     .muted{color:var(--muted);font-size:12px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .field{display:flex;flex-direction:column;gap:4px}
+    .field input,.field select{border:1px solid #ccc;padding:8px;border-radius:8px}
     .seat{
-      width:32px;height:32px;border-radius:6px;border:1px solid #999;font-size:11px;cursor:default;
+      width:32px;height:32px;border-radius:6px;border:1px solid #999;font-size:11px;cursor:pointer;
       box-shadow:0 1px 2px rgba(0,0,0,.08);display:inline-flex;align-items:center;justify-content:center;
+      user-select:none;
     }
     .s-free{background:var(--free);color:#111}
     .s-reserved{background:var(--reserved);color:#111}
@@ -32,11 +39,12 @@
     .s-paid{background:var(--paid);color:#111}
     .s-blocked{background:var(--blocked);color:#fff}
     .s-closed{background:var(--closed);color:#fff}
+    .selected{border:2px solid var(--accent)!important;box-shadow:0 0 0 2px rgba(37,99,235,.15)!important;transform:scale(1.04)}
     .stage{max-width:420px;margin:0 auto 10px;border:1px solid #222;border-radius:16px;background:#111827;color:#fff;padding:12px 20px;text-align:center;font-size:12px;font-weight:700;letter-spacing:.35em;text-transform:uppercase}
-    .wrap{max-width:1100px;margin:0 auto;border:1px solid #ddd;border-radius:16px;background:#fafafa;padding:20px}
+    .wrap{max-width:1100px;margin:0 auto;border:1px solid #ddd;border-radius:16px;background:#fafafa;padding:20px;overflow:auto}
     .seatline{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px}
     .seatrow{display:flex;gap:4px;justify-content:center;flex-wrap:nowrap}
-    .tiny{width:22px;height:22px;font-size:10px;border-radius:6px;border:1px solid #999;display:inline-flex;align-items:center;justify-content:center}
+    .tiny{width:22px;height:22px;font-size:10px;border-radius:6px;border:1px solid #999;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
     .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px}
     .legend-item{display:flex;gap:6px;align-items:center}
     .dot{width:14px;height:14px;border-radius:4px;border:1px solid #999;display:inline-block}
@@ -48,7 +56,9 @@
     .order-grid{display:grid;grid-template-columns:1fr 140px 1fr;gap:12px;align-items:start}
     .order-col{display:grid;gap:8px}
     .sala-mid{min-height:140px;border:1px dashed #d4d4d8;border-radius:18px;background:rgba(255,255,255,.75);display:flex;align-items:center;justify-content:center;font-size:11px;text-transform:uppercase;letter-spacing:.25em;color:#a1a1aa}
-    .box{border:1px solid #ccc;border-radius:12px;padding:10px;text-align:left;box-shadow:0 1px 2px rgba(0,0,0,.08);cursor:default}
+    .box{border:1px solid #ccc;border-radius:12px;padding:10px;text-align:left;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+    .success{padding:10px 12px;border-radius:10px;background:#ecfdf5;color:#166534;border:1px solid #bbf7d0}
+    .error{padding:10px 12px;border-radius:10px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
   </style>
 </head>
 <body>
@@ -69,38 +79,57 @@ const state = {
   seats: [],
   performances: [],
   seatStates: [],
+  bookings: [],
+  bookingItems: [],
+  payments: [],
   currentArea: 'platea',
   currentPerformanceId: null,
+  selectedSeatIds: [],
   loading: true,
+  saving: false,
   error: '',
+  notice: '',
+  form: {
+    full_name: '',
+    phone: '',
+    email: '',
+    payment_method: 'cash',
+    paid_amount: '',
+    notes: ''
+  }
 };
 
+function esc(s){ return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'); }
 function seatClass(status){ return `seat s-${status}`; }
 function tinySeatClass(status){ return `tiny s-${status}`; }
-function esc(s){ return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'); }
 
 async function loadAll() {
   state.loading = true;
   state.error = '';
   render();
-
   try {
-    const [{ data: performances, error: perfErr }, { data: seats, error: seatsErr }, { data: seatStates, error: statesErr }] = await Promise.all([
+    const [{ data: performances, error: perfErr }, { data: seats, error: seatsErr }, { data: seatStates, error: statesErr }, { data: bookings, error: bookingsErr }, { data: bookingItems, error: itemsErr }, { data: payments, error: payErr }] = await Promise.all([
       supabaseClient.from('performances').select('*').order('starts_at', { ascending: true }),
       supabaseClient.from('seats').select('*').eq('is_active', true).order('area').order('row_label').order('seat_label'),
-      supabaseClient.from('seat_states').select('*')
+      supabaseClient.from('seat_states').select('*'),
+      supabaseClient.from('bookings').select('*'),
+      supabaseClient.from('booking_items').select('*'),
+      supabaseClient.from('payments').select('*')
     ]);
-
     if (perfErr) throw perfErr;
     if (seatsErr) throw seatsErr;
     if (statesErr) throw statesErr;
+    if (bookingsErr) throw bookingsErr;
+    if (itemsErr) throw itemsErr;
+    if (payErr) throw payErr;
 
     state.performances = performances || [];
     state.seats = seats || [];
     state.seatStates = seatStates || [];
-    if (!state.currentPerformanceId && state.performances.length) {
-      state.currentPerformanceId = state.performances[0].id;
-    }
+    state.bookings = bookings || [];
+    state.bookingItems = bookingItems || [];
+    state.payments = payments || [];
+    if (!state.currentPerformanceId && state.performances.length) state.currentPerformanceId = state.performances[0].id;
   } catch (err) {
     state.error = err?.message || 'Errore di connessione a Supabase';
   } finally {
@@ -109,13 +138,40 @@ async function loadAll() {
   }
 }
 
-function patchArea(v){ state.currentArea = v; render(); }
-function patchPerformance(v){ state.currentPerformanceId = v; render(); }
+function performanceLabel(p){
+  const showDate = '2026-05-16';
+  return `${p.label || ''} · ${showDate}`;
+}
 
-function getSeatState(seatId) {
-  if (!state.currentPerformanceId) return 'free';
-  const found = state.seatStates.find(x => x.performance_id === state.currentPerformanceId && x.seat_id === seatId);
-  return found?.state || 'free';
+function patchArea(v){ state.currentArea = v; state.selectedSeatIds = []; state.notice=''; render(); }
+function patchPerformance(v){ state.currentPerformanceId = v; state.selectedSeatIds = []; state.notice=''; render(); }
+function updateForm(k,v){ state.form[k]=v; render(); }
+
+function bookingStatusForSeat(seatId){
+  const activeItems = state.bookingItems.filter(i => i.seat_id === seatId && i.is_active !== false);
+  for (const item of activeItems) {
+    const booking = state.bookings.find(b => b.id === item.booking_id);
+    if (booking && booking.performance_id === state.currentPerformanceId && booking.booking_status !== 'cancelled') {
+      return booking.booking_status;
+    }
+  }
+  const technical = state.seatStates.find(x => x.performance_id === state.currentPerformanceId && x.seat_id === seatId);
+  return technical?.state || 'free';
+}
+
+function isSelectableSeat(seatId){
+  return bookingStatusForSeat(seatId) === 'free';
+}
+
+function toggleSeat(seatId){
+  if (!isSelectableSeat(seatId) || state.saving) return;
+  if (state.selectedSeatIds.includes(seatId)) {
+    state.selectedSeatIds = state.selectedSeatIds.filter(x => x !== seatId);
+  } else {
+    state.selectedSeatIds = [...state.selectedSeatIds, seatId];
+  }
+  state.notice = '';
+  render();
 }
 
 function sortSeatRows(a, b) {
@@ -136,22 +192,113 @@ function sortSeatNumbers(a, b) {
 }
 
 function seatButtonHTML(seat, size=32) {
-  return `<span class="${size === 22 ? tinySeatClass(getSeatState(seat.id)) : seatClass(getSeatState(seat.id))}" title="${esc(seat.seat_label)}" style="${size===22?`width:${size}px;height:${size}px;`:`width:${size}px;height:${size}px;`}">${esc(seat.seat_number)}</span>`;
+  const status = bookingStatusForSeat(seat.id);
+  const selected = state.selectedSeatIds.includes(seat.id);
+  const cls = size === 22 ? tinySeatClass(status) : seatClass(status);
+  const tag = size === 22 ? 'button' : 'button';
+  const extra = selected ? ' selected' : '';
+  return `<${tag} class="${cls}${extra}" title="${esc(seat.seat_label)}" onclick="toggleSeat('${seat.id}')" ${status !== 'free' || state.saving ? 'disabled' : ''} style="${size===22?`width:${size}px;height:${size}px;`:`width:${size}px;height:${size}px;`}">${esc(seat.seat_number)}</${tag}>`;
 }
 
-function performanceLabel(p){
-  const showDate = '2026-05-16';
-  const datePart = showDate ? ` · ${showDate}` : (p.show_date ? ` · ${p.show_date}` : '');
-  return `${p.label || ''}${datePart}`;
+function selectedSeats(){
+  return state.seats.filter(s => state.selectedSeatIds.includes(s.id));
 }
 
-function areaStats() {
-  return ['platea','palchi','reale','galleria'].map(area => {
-    const areaSeats = state.seats.filter(s => s.area === area);
-    const counts = { free:0, blocked:0, closed:0 };
-    for (const s of areaSeats) counts[getSeatState(s.id)] = (counts[getSeatState(s.id)] || 0) + 1;
-    return { area, total: areaSeats.length, ...counts };
-  });
+function selectedTotal(){
+  return selectedSeats().reduce((sum, s) => sum + Number(s.base_price || 0), 0);
+}
+
+async function saveBooking(){
+  state.notice = '';
+  if (!state.form.full_name.trim()) {
+    state.error = 'Inserisci il nome cliente.';
+    render();
+    return;
+  }
+  if (!state.currentPerformanceId) {
+    state.error = 'Nessuna recita selezionata.';
+    render();
+    return;
+  }
+  if (!state.selectedSeatIds.length) {
+    state.error = 'Seleziona almeno un posto libero.';
+    render();
+    return;
+  }
+
+  state.saving = true;
+  state.error = '';
+  render();
+
+  try {
+    const seatObjs = selectedSeats();
+    const paidAmount = Math.max(0, Number(state.form.paid_amount || 0));
+
+    const { data: customerData, error: customerErr } = await supabaseClient
+      .from('customers')
+      .insert([{
+        full_name: state.form.full_name.trim(),
+        phone: state.form.phone.trim() || null,
+        email: state.form.email.trim() || null,
+        notes: state.form.notes.trim() || null
+      }])
+      .select()
+      .single();
+
+    if (customerErr) throw customerErr;
+
+    const { data: bookingData, error: bookingErr } = await supabaseClient
+      .from('bookings')
+      .insert([{
+        customer_id: customerData.id,
+        performance_id: state.currentPerformanceId,
+        payment_method: state.form.payment_method,
+        booking_status: 'reserved',
+        notes: state.form.notes.trim() || null
+      }])
+      .select()
+      .single();
+
+    if (bookingErr) throw bookingErr;
+
+    const itemsPayload = seatObjs.map(seat => ({
+      booking_id: bookingData.id,
+      seat_id: seat.id,
+      price: seat.base_price,
+      delivery_status: 'to_buy',
+      is_active: true
+    }));
+
+    const { error: itemsErr } = await supabaseClient
+      .from('booking_items')
+      .insert(itemsPayload);
+
+    if (itemsErr) throw itemsErr;
+
+    if (paidAmount > 0) {
+      const { error: payErr } = await supabaseClient
+        .from('payments')
+        .insert([{
+          booking_id: bookingData.id,
+          customer_id: customerData.id,
+          amount: paidAmount,
+          payment_method: state.form.payment_method,
+          note: 'Versato iniziale'
+        }]);
+      if (payErr) throw payErr;
+    }
+
+    state.notice = `Prenotazione salvata per ${state.form.full_name.trim()}.`;
+    state.form = { full_name:'', phone:'', email:'', payment_method:'cash', paid_amount:'', notes:'' };
+    state.selectedSeatIds = [];
+    await loadAll();
+    state.notice = `Prenotazione salvata con successo.`;
+  } catch (err) {
+    state.error = err?.message || 'Errore durante il salvataggio';
+  } finally {
+    state.saving = false;
+    render();
+  }
 }
 
 function renderMap() {
@@ -162,7 +309,7 @@ function renderMap() {
     return `
       <div class="card">
         <div class="title">${state.currentArea === 'platea' ? 'Platea' : 'Reale'}</div>
-        ${state.currentArea === 'platea' ? '<div class="stage">Palco</div>' : '<div class="stage">Palco</div>'}
+        <div class="stage">Palco</div>
         <div class="wrap">
           ${rows.map((row) => {
             const rowSeats = areaSeats.filter(s => s.row_label === row).sort(sortSeatNumbers);
@@ -216,13 +363,14 @@ function renderMap() {
               const boxId = `${order}-PAL${String(boxNumber).padStart(2,'0')}`;
               const boxSeats = areaSeats.filter(s => s.group_id === boxId).sort(sortSeatNumbers);
               if (!boxSeats.length) return '';
-              const states = boxSeats.map(s => getSeatState(s.id));
+              const states = boxSeats.map(s => bookingStatusForSeat(s.id));
               let boxState = 'free';
               if (states.every(x => x === 'closed')) boxState = 'closed';
               else if (states.every(x => x === 'blocked')) boxState = 'blocked';
+              else if (states.some(x => ['reserved','partial','paid'].includes(x))) boxState = states.find(x => ['reserved','partial','paid'].includes(x));
               else if (states.some(x => x === 'blocked')) boxState = 'blocked';
 
-              const bg = boxState==='closed' ? '#111827' : boxState==='blocked' ? '#f87171' : '#fff';
+              const bg = boxState==='closed' ? '#111827' : boxState==='blocked' ? '#f87171' : boxState==='paid' ? '#86efac' : boxState==='partial' ? '#d8b4fe' : boxState==='reserved' ? '#fde68a' : '#fff';
               const color = (boxState==='closed'||boxState==='blocked') ? '#fff' : '#111';
               const count = side === 'left' ? layout.left.length : layout.right.length;
               const insetFactor = (count - 1 - idx);
@@ -261,18 +409,19 @@ function renderMap() {
 function render() {
   const app = document.getElementById('app');
   const currentPerformance = state.performances.find(p => p.id === state.currentPerformanceId);
-  const stats = areaStats();
+  const selected = selectedSeats();
 
   app.innerHTML = `
     <div class="card">
-      <div class="title">Biglietteria Giglio Online v2</div>
-      <div class="muted">Prima versione online collegata a Supabase. Questa versione legge i posti reali dal database e mostra lo stato tecnico per recita.</div>
+      <div class="title">Biglietteria Giglio Online v3</div>
+      <div class="muted">Prima versione operativa: selezione posti liberi, anagrafica cliente e salvataggio prenotazione su Supabase.</div>
       <div class="row" style="margin-top:12px">
         <div><strong>Connessione:</strong> ${state.error ? '<span class="status-ko">errore</span>' : state.loading ? '<span class="status-warn">caricamento</span>' : '<span class="status-ok">ok</span>'}</div>
         <div><strong>Posti letti:</strong> ${state.seats.length}</div>
-        <div><strong>Recite:</strong> ${state.performances.length}</div>
+        <div><strong>Prenotazioni lette:</strong> ${state.bookings.length}</div>
       </div>
-      ${state.error ? `<div class="muted status-ko" style="margin-top:8px">${esc(state.error)}</div>` : ''}
+      ${state.notice ? `<div class="success" style="margin-top:10px">${esc(state.notice)}</div>` : ''}
+      ${state.error ? `<div class="error" style="margin-top:10px">${esc(state.error)}</div>` : ''}
     </div>
 
     <div class="row">
@@ -291,31 +440,37 @@ function render() {
     </div>
 
     <div class="card">
-      <div class="title">Note mappa v2</div>
-      <div class="muted">Palchi primo ordine: la resa segue la mappa attuale con i salti dei due palchetti mancanti. Galleria fila 9: visualizzata senza varco centrale.</div>
-    </div>
-
-    <div class="card">
       <div class="title">Legenda</div>
       <div class="legend">
         <div class="legend-item"><span class="dot" style="background:var(--free)"></span> Libero</div>
+        <div class="legend-item"><span class="dot" style="background:var(--reserved)"></span> Prenotato</div>
+        <div class="legend-item"><span class="dot" style="background:var(--partial)"></span> Parziale</div>
+        <div class="legend-item"><span class="dot" style="background:var(--paid)"></span> Pagato</div>
         <div class="legend-item"><span class="dot" style="background:var(--blocked)"></span> Bloccato</div>
         <div class="legend-item"><span class="dot" style="background:var(--closed)"></span> Chiuso</div>
       </div>
     </div>
 
     <div class="card">
-      <div class="title">Consuntivo rapido</div>
-      <div class="row">
-        ${stats.map(s => `
-          <div class="card" style="min-width:220px;margin:0">
-            <div style="font-weight:700;text-transform:capitalize">${s.area}</div>
-            <div class="muted">Totale posti: ${s.total}</div>
-            <div class="muted">Liberi: ${s.free || 0}</div>
-            <div class="muted">Bloccati: ${s.blocked || 0}</div>
-            <div class="muted">Chiusi: ${s.closed || 0}</div>
-          </div>
-        `).join('')}
+      <div class="title">Nuova prenotazione</div>
+      <div class="grid2">
+        <div class="field"><label>Nome cliente</label><input value="${esc(state.form.full_name)}" oninput="updateForm('full_name', this.value)" placeholder="Nome e cognome"></div>
+        <div class="field"><label>Telefono</label><input value="${esc(state.form.phone)}" oninput="updateForm('phone', this.value)"></div>
+        <div class="field"><label>Email</label><input value="${esc(state.form.email)}" oninput="updateForm('email', this.value)"></div>
+        <div class="field"><label>Pagamento</label>
+          <select onchange="updateForm('payment_method', this.value)">
+            <option value="cash" ${state.form.payment_method==='cash'?'selected':''}>Contanti</option>
+            <option value="bank" ${state.form.payment_method==='bank'?'selected':''}>Bonifico</option>
+          </select>
+        </div>
+        <div class="field"><label>Versato iniziale</label><input type="number" min="0" value="${esc(state.form.paid_amount)}" oninput="updateForm('paid_amount', this.value)"></div>
+        <div class="field"><label>Note</label><input value="${esc(state.form.notes)}" oninput="updateForm('notes', this.value)"></div>
+      </div>
+      <div class="muted" style="margin-top:10px">Posti selezionati: <strong>${selected.map(s => s.seat_label).join(', ') || '—'}</strong></div>
+      <div class="muted">Totale selezione: <strong>€${selectedTotal().toFixed(2)}</strong></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn green" onclick="saveBooking()" ${state.saving || !state.selectedSeatIds.length ? 'disabled' : ''}>Salva prenotazione</button>
+        <button class="btn" onclick="state.selectedSeatIds=[]; state.notice=''; render()" ${state.saving || !state.selectedSeatIds.length ? 'disabled' : ''}>Deseleziona tutto</button>
       </div>
     </div>
 
@@ -325,6 +480,9 @@ function render() {
 
 window.patchArea = patchArea;
 window.patchPerformance = patchPerformance;
+window.updateForm = updateForm;
+window.toggleSeat = toggleSeat;
+window.saveBooking = saveBooking;
 
 render();
 loadAll();
